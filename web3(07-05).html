@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Include the CesiumJS JavaScript and CSS files -->
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.106/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+</head>
+<style>
+#timeSlider {
+  width: 500px; /* Set your desired width here */
+}
+</style>
+<body>
+  <div id="cesiumContainer"></div>
+  <input type="file" id="fileInput">
+  <div id="controls">
+    <button id="playButton" disabled>Play</button>
+    <button id="pauseButton" disabled>Pause</button>
+    <p id="displayTime"></p>
+    <input type="range" id="timeSlider" min="0" max="100" value="0" step="1" disabled>
+  </div>
+  <script>
+    // Your access token can be found at: https://ion.cesium.com/tokens.
+    // Replace `your_access_token` with your Cesium ion access token.
+    Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJkOTk0ZTYxZi0xMDI4LTQwNjUtOGRlZi1iY2IxNjc1YzZkNjMiLCJpZCI6MTUwOTgxLCJpYXQiOjE2ODgzNzc4NzR9.VhLvbQVTvJzkpFQCRckdPgon1N3aasx8QaBbgack85I';
+
+    // Initialize the Cesium Viewer in the HTML element with the `cesiumContainer` ID.
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+      terrainProvider: Cesium.createWorldTerrain(),
+      infoBox: false,
+      selectionIndicator: false,
+      shadows: true,
+      shouldAnimate: true,
+    });
+
+    // Variables to store flight data and playback information
+    let flightData = [];
+    let playbackIndex = 0;
+    let playbackInterval;
+    let isPlaying = false;
+
+    // Function to parse flight data from CSV
+    function parseFlightData(csvData) {
+      // Remove the header rows
+      const lines = csvData.split('\n').slice(26);
+
+      // Process flight data
+      flightData = lines.map((line) => {
+        const [time, roll, pitch, yaw, latitude, longitude, altitude, xAccel, yAccel, zAccel] = line.split(',');
+        return {
+          time: parseFloat(time),
+          roll: parseFloat(roll),
+          pitch: parseFloat(pitch),
+          yaw: parseFloat(yaw),
+          latitude: parseFloat(latitude),
+          longitude: parseFloat(longitude),
+          altitude: parseFloat(altitude),
+          xAccel: parseFloat(xAccel),
+          yAccel: parseFloat(yAccel),
+          zAccel: parseFloat(zAccel),
+        };
+      });
+
+
+      // Enable the play button and time slider
+      const playButton = document.getElementById('playButton');
+      const timeSlider = document.getElementById('timeSlider');
+      playButton.disabled = false;
+      timeSlider.disabled = false;
+      timeSlider.max = flightData.length - 1;
+
+    }
+
+    // Function to display flight on the map
+    function displayFlight() {
+      const canvas = document.getElementById('myCanvas');
+      // canvas.style.display = 'block';
+      viewer.entities.removeAll();
+
+      if (playbackIndex >= flightData.length) {
+        stopPlayback();
+        return;
+      }
+
+      const startIndex = Math.max(0, playbackIndex - 99);
+      const endIndex = playbackIndex;
+
+      const position = Cesium.Cartesian3.fromDegrees(
+        flightData[endIndex].longitude, 
+        flightData[endIndex].latitude,
+        flightData[endIndex].altitude,
+      );
+      
+        const currentPos = Cesium.Cartesian3.fromDegrees( flightData[endIndex].longitude, flightData[endIndex].latitude, flightData[endIndex].altitude); // Current position as a Cartesian3
+        const nextData = flightData[endIndex+1];
+        const nextPos = Cesium.Cartesian3.fromDegrees(nextData.longitude, nextData.latitude, nextData.altitude); // Next position as a Cartesian3
+
+        // Calculate the heading (rotation around the vertical axis) using the HeadingPitchRoll class
+        const currentCartographic = Cesium.Cartographic.fromCartesian(currentPos);
+        const nextCartographic = Cesium.Cartographic.fromCartesian(nextPos);
+
+        const currentLon = Cesium.Math.toDegrees(currentCartographic.longitude);
+        const currentLat = Cesium.Math.toDegrees(currentCartographic.latitude);
+        const nextLon = Cesium.Math.toDegrees(nextCartographic.longitude);
+        const nextLat = Cesium.Math.toDegrees(nextCartographic.latitude);
+
+        const deltaLon = nextLon - currentLon;
+        const deltaLat = nextLat - currentLat;
+
+        const heading = Math.atan2(deltaLon, deltaLat) +  Cesium.Math.toRadians(-90);
+        const pitch = 0;
+        const roll = 0;
+        const hpr = new Cesium.HeadingPitchRoll(heading, pitch, roll);
+        const orientation = Cesium.Transforms.headingPitchRollQuaternion(
+          position,
+          hpr
+        );
+        const timeStepInSeconds = 30;
+    const totalSeconds = timeStepInSeconds * (flightData.length - 1);
+    const start = Cesium.JulianDate.fromIso8601("2020-03-09T23:10:00Z");
+    const stop = Cesium.JulianDate.addSeconds(start, totalSeconds, new Cesium.JulianDate());
+    viewer.clock.startTime = start.clone();
+    viewer.clock.stopTime = stop.clone();
+    viewer.clock.currentTime = start.clone();
+    viewer.timeline.zoomTo(start, stop);
+    // Speed up the playback speed 50x.
+    viewer.clock.multiplier = 50;
+    // Start playing the scene.
+    viewer.clock.shouldAnimate = true;
+
+    // The SampledPositionedProperty stores the position and timestamp for each sample along the radar sample series.
+    const positionProperty = new Cesium.SampledPositionProperty();
+
+    for (let i = 0; i < flightData.length; i++) {
+      const dataPoint = flightData[i];
+
+      // Declare the time for this individual sample and store it in a new JulianDate instance.
+      const time = Cesium.JulianDate.addSeconds(start, i * timeStepInSeconds, new Cesium.JulianDate());
+      const position = Cesium.Cartesian3.fromDegrees(dataPoint.longitude, dataPoint.latitude, dataPoint.altitude);
+      // Store the position along with its timestamp.
+      // Here we add the positions all upfront, but these can be added at run-time as samples are received from a server.
+      positionProperty.addSample(time, position);
+
+      viewer.entities.add({
+        description: `Location: (${dataPoint.longitude}, ${dataPoint.latitude}, ${dataPoint.altitude})`,
+        position: position,
+        point: { pixelSize: 10, color: Cesium.Color.RED }
+      });
+    }
+
+    // STEP 6 CODE (airplane entity)
+    async function loadModel() {
+      // Load the glTF model from Cesium ion.
+      const airplaneUri = await Cesium.IonResource.fromAssetId(1931753);
+      const airplaneEntity = viewer.entities.add({
+        availability: new Cesium.TimeIntervalCollection([ new Cesium.TimeInterval({ start: start, stop: stop }) ]),
+        position: positionProperty,
+        // Attach the 3D model instead of the green point.
+        model: { uri: airplaneUri },
+        // Automatically compute the orientation from the position.
+        orientation: new Cesium.VelocityOrientationProperty(positionProperty),    
+        path: new Cesium.PathGraphics({ width: 3 })
+      });
+      
+      viewer.trackedEntity = airplaneEntity;
+    }
+
+    loadModel();
+    //  for (let i = startIndex; i <= endIndex; i++) {
+    //     const data = flightData[i];
+    //     const position = Cesium.Cartesian3.fromDegrees(data.longitude, data.latitude, data.altitude);
+
+    //     viewer.entities.add({
+    //       position: position,
+    //       point: {
+    //         pixelSize: 5,
+    //         color: Cesium.Color.RED,
+    //       },
+    //     });
+    //   }
+      // Update the time slider position
+      const timeSlider = document.getElementById('timeSlider');
+      timeSlider.value = playbackIndex;
+      console.log('timeSlider.value :>> ', timeSlider.value);
+
+      playbackIndex++;
+
+      //Update the time of display 
+
+    function convertSecondsToTime(seconds) {
+        let minutes = Math.floor(seconds / 60);
+        let remainingSeconds = seconds % 60;
+        
+        let milliseconds = Math.floor((remainingSeconds - Math.floor(remainingSeconds)) * 1000);
+        remainingSeconds = Math.floor(remainingSeconds);
+
+        if (minutes < 10) {
+          minutes = '0' + minutes;
+        }
+
+        if (remainingSeconds < 10) {
+          remainingSeconds = '0' + remainingSeconds;
+        }
+        
+        if (milliseconds < 10) {
+          milliseconds = '00' + milliseconds;
+        } else if (milliseconds < 100) {
+          milliseconds = '0' + milliseconds;
+        }
+        
+        return minutes + ':' + remainingSeconds + ':' + milliseconds;
+      }
+      const time = convertSecondsToTime(flightData[playbackIndex].time);
+      document.getElementById('displayTime').innerHTML = time;
+
+      // Calculate the time difference between current and next data point
+      const currentTime = flightData[playbackIndex - 1].time;
+      const nextTime = flightData[playbackIndex].time;
+      const timeDifference = nextTime - currentTime;
+
+      // Check if playback is still active
+      if (isPlaying && playbackIndex < flightData.length) {
+        playbackInterval = requestAnimationFrame(displayFlight);
+        setTimeout(displayFlight, timeDifference * 1000);
+      } else {
+        stopPlayback();
+      }
+    }
+
+    // Function to start the playback
+    function startPlayback() {
+      if (flightData.length === 0) {
+        alert('Please upload a flight data file.');
+        return;
+      }
+
+      playbackIndex = parseInt(document.getElementById('timeSlider').value);
+      isPlaying = true;
+
+      const playButton = document.getElementById('playButton');
+      const pauseButton = document.getElementById('pauseButton');
+      const timeSlider = document.getElementById('timeSlider');
+      playButton.disabled = true;
+      pauseButton.disabled = false;
+      timeSlider.disabled = true;
+
+      displayFlight();
+    }
+
+    // Function to pause the playback
+    function pausePlayback() {
+      clearTimeout(playbackInterval);
+      isPlaying = false;
+
+      const playButton = document.getElementById('playButton');
+      const pauseButton = document.getElementById('pauseButton');
+      const timeSlider = document.getElementById('timeSlider');
+      playButton.disabled = false;
+      pauseButton.disabled = true;
+      timeSlider.disabled = false;
+    }
+
+    // Function to stop the playback
+    function stopPlayback() {
+      clearTimeout(playbackInterval);
+      playbackIndex = 0;
+      isPlaying = false;
+
+      const playButton = document.getElementById('playButton');
+      const pauseButton = document.getElementById('pauseButton');
+      const timeSlider = document.getElementById('timeSlider');
+      playButton.disabled = false;
+      pauseButton.disabled = true;
+      timeSlider.disabled = false;
+      timeSlider.value = 0;
+    }
+
+    // Handle file upload event
+    function handleFileUpload(event) {
+      const file = event.target.files[0];
+      const reader = new FileReader();
+
+      reader.onload = function (e) {
+        const csvData = e.target.result;
+        parseFlightData(csvData);
+        stopPlayback();
+      };
+
+      reader.readAsText(file);
+    }
+
+    // Add event listener to file input
+    const fileInput = document.getElementById('fileInput');
+    fileInput.addEventListener('change', handleFileUpload);
+
+    // Add event listener to play button
+    const playButton = document.getElementById('playButton');
+    playButton.addEventListener('click', startPlayback);
+
+    // Add event listener to pause button
+    const pauseButton = document.getElementById('pauseButton');
+    pauseButton.addEventListener('click', pausePlayback);
+
+    // Add event listener to stop button
+    const stopButton = document.getElementById('stopButton');
+    stopButton.addEventListener('click', stopPlayback);
+
+    // Add event listener to time slider
+    const timeSlider = document.getElementById('timeSlider');
+    timeSlider.addEventListener('input', () => {
+      playbackIndex = parseInt(timeSlider.value);
+      displayFlight();
+    });
+
+  </script>
+</body>
+</html>
